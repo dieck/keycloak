@@ -61,6 +61,8 @@ public class KeycloakInstalled {
         void success(PrintWriter pw, KeycloakInstalled ki);
 
         void failure(PrintWriter pw, KeycloakInstalled ki);
+        
+        void ignore(PrintWriter pw, KeycloakInstalled ki);
     }
 
     private static final String KEYCLOAK_JSON = "META-INF/keycloak.json";
@@ -639,58 +641,77 @@ public class KeycloakInstalled {
 
         @Override
         public void run() {
-            try {
-                socket = server.accept();
+            while(true) {
+                try {
+                    socket = server.accept();
 
-                BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                String request = br.readLine();
+                    BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                    String request = br.readLine();
 
-                String url = request.split(" ")[1];
-                if (url.indexOf('?') >= 0) {
-                    url = url.split("\\?")[1];
-                    String[] params = url.split("&");
-
-                    for (String param : params) {
-                        String[] p = param.split("=");
-                        if (p[0].equals(OAuth2Constants.CODE)) {
-                            code = p[1];
-                        } else if (p[0].equals(OAuth2Constants.ERROR)) {
-                            error = p[1];
-                        } else if (p[0].equals("error-description")) {
-                            errorDescription = p[1];
-                        } else if (p[0].equals(OAuth2Constants.STATE)) {
-                            state = p[1];
-                        }
-                    }
-                }
-
-                OutputStreamWriter out = new OutputStreamWriter(socket.getOutputStream());
-                PrintWriter pw = new PrintWriter(out);
-                if (writer != null) {
-                    System.err.println("Using a writer is deprecated.  Please remove its usage.  This is now handled by endpoint on server");
-                }
-
-                if (error == null) {
-                     if (writer != null) {
-                         writer.success(pw, KeycloakInstalled.this);
-                     } else {
-                         pw.println("HTTP/1.1 302 Found");
-                         pw.println("Location: " + deployment.getTokenUrl().replace("/token", "/delegated"));
-
-                     }
-                } else {
+                    OutputStreamWriter out = new OutputStreamWriter(socket.getOutputStream());
+                    PrintWriter pw = new PrintWriter(out);
                     if (writer != null) {
-                        writer.failure(pw, KeycloakInstalled.this);
-                    } else {
-                        pw.println("HTTP/1.1 302 Found");
-                        pw.println("Location: " + deployment.getTokenUrl().replace("/token", "/delegated?error=true"));
-
+                        System.err.println("Using a writer is deprecated.  Please remove its usage.  This is now handled by endpoint on server");
                     }
+
+                    String url = request.split(" ")[1];
+                    if (url.indexOf('?') >= 0) {
+                        url = url.split("\\?")[1];
+                        String[] params = url.split("&");
+                        
+                        for (String param : params) {
+                            String[] p = param.split("=");
+                            if (p[0].equals(OAuth2Constants.CODE)) {
+                                code = p[1];
+                            } else if (p[0].equals(OAuth2Constants.ERROR)) {
+                                error = p[1];
+                            } else if (p[0].equals("error-description")) {
+                                errorDescription = p[1];
+                            } else if (p[0].equals(OAuth2Constants.STATE)) {
+                                state = p[1];
+                            }
+                        }
+
+                        if (error == null) {
+                             if (writer != null) {
+                                 writer.success(pw, KeycloakInstalled.this);
+                             } else {
+                                 pw.println("HTTP/1.1 302 Found");
+                                 pw.println("Location: " + deployment.getTokenUrl().replace("/token", "/delegated"));
+                                 
+                             }
+                        } else {
+                            if (writer != null) {
+                                writer.failure(pw, KeycloakInstalled.this);
+                            } else {
+                                pw.println("HTTP/1.1 302 Found");
+                                pw.println("Location: " + deployment.getTokenUrl().replace("/token", "/delegated?error=true"));
+                            
+                            }
+                        }
+    
+                        pw.flush();
+                        socket.close();
+                        break;
+
+                    } else {
+                        if (writer != null) {
+                            writer.ignore(pw, KeycloakInstalled.this);
+                        } else {
+                            pw.println("HTTP/1.1 404 Not Found");
+
+                        }
+                        
+                        pw.flush();
+                        socket.close();
+                        continue;
+                  
+                    }
+
+                } catch (IOException e) {
+                    errorException = e;
                 }
-                pw.flush();
-                socket.close();
-            } catch (IOException e) {
-                errorException = e;
+                
             }
 
             try {
