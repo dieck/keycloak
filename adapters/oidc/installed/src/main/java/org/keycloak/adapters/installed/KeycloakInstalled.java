@@ -17,6 +17,33 @@
 
 package org.keycloak.adapters.installed;
 
+import java.awt.Desktop;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.io.Reader;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Locale;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import javax.ws.rs.client.Entity;
+import javax.ws.rs.core.Form;
+import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.core.Response;
+
 import org.jboss.resteasy.client.jaxrs.ResteasyClient;
 import org.jboss.resteasy.client.jaxrs.ResteasyClientBuilder;
 import org.keycloak.OAuth2Constants;
@@ -33,25 +60,6 @@ import org.keycloak.representations.AccessToken;
 import org.keycloak.representations.AccessTokenResponse;
 import org.keycloak.representations.IDToken;
 
-import javax.ws.rs.client.Entity;
-import javax.ws.rs.core.Form;
-import javax.ws.rs.core.HttpHeaders;
-import javax.ws.rs.core.Response;
-import java.awt.*;
-import java.io.*;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
-import java.util.Locale;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
  */
@@ -61,7 +69,7 @@ public class KeycloakInstalled {
         void success(PrintWriter pw, KeycloakInstalled ki);
 
         void failure(PrintWriter pw, KeycloakInstalled ki);
-        
+
         void ignore(PrintWriter pw, KeycloakInstalled ki);
     }
 
@@ -176,16 +184,16 @@ public class KeycloakInstalled {
 
         callback.join();
 
+        if (callback.errorException != null) {
+            throw callback.errorException;
+        }
+
         if (!state.equals(callback.state)) {
             throw new VerificationException("Invalid state");
         }
 
         if (callback.error != null) {
             throw new OAuthErrorException(callback.error, callback.errorDescription);
-        }
-
-        if (callback.errorException != null) {
-            throw callback.errorException;
         }
 
         processCode(callback.code, redirectUri, pkce);
@@ -630,35 +638,34 @@ public class KeycloakInstalled {
 
         private String state;
 
-        private Socket socket;
-
         private HttpResponseWriter writer;
 
         public CallbackListener(HttpResponseWriter writer) throws IOException {
             this.writer = writer;
-            server = new ServerSocket(0);
+            this.server = new ServerSocket(0);
         }
 
         @Override
         public void run() {
-            while(true) {
-                try {
-                    socket = server.accept();
+            boolean acceptNewRequest = true;
 
+            while(acceptNewRequest) {
+                try (Socket socket = server.accept()) {
                     BufferedReader br = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                     String request = br.readLine();
 
                     OutputStreamWriter out = new OutputStreamWriter(socket.getOutputStream());
                     PrintWriter pw = new PrintWriter(out);
+
                     if (writer != null) {
-                        System.err.println("Using a writer is deprecated.  Please remove its usage.  This is now handled by endpoint on server");
+                        System.err.println("Using a writer is deprecated. Please remove its usage. This is now handled by endpoint on server");
                     }
 
                     String url = request.split(" ")[1];
                     if (url.indexOf('?') >= 0) {
                         url = url.split("\\?")[1];
                         String[] params = url.split("&");
-                        
+
                         for (String param : params) {
                             String[] p = param.split("=");
                             if (p[0].equals(OAuth2Constants.CODE)) {
@@ -678,7 +685,9 @@ public class KeycloakInstalled {
                              } else {
                                  pw.println("HTTP/1.1 302 Found");
                                  pw.println("Location: " + deployment.getTokenUrl().replace("/token", "/delegated"));
-                                 
+                                 pw.println("Connection: close");
+                                 pw.println();
+
                              }
                         } else {
                             if (writer != null) {
@@ -686,32 +695,33 @@ public class KeycloakInstalled {
                             } else {
                                 pw.println("HTTP/1.1 302 Found");
                                 pw.println("Location: " + deployment.getTokenUrl().replace("/token", "/delegated?error=true"));
-                            
+                                pw.println("Connection: close");
+                                pw.println();
                             }
                         }
-    
-                        pw.flush();
-                        socket.close();
-                        break;
 
+                        pw.flush();
+                        acceptNewRequest = false;
                     } else {
                         if (writer != null) {
                             writer.ignore(pw, KeycloakInstalled.this);
                         } else {
                             pw.println("HTTP/1.1 404 Not Found");
-
+                            pw.println("Content-Length: 0");
+                            pw.println("Connection: close");
+                            pw.println("");
                         }
-                        
-                        pw.flush();
-                        socket.close();
-                        continue;
-                  
-                    }
 
+                        pw.flush();
+                        acceptNewRequest = true;
+                    }
                 } catch (IOException e) {
                     errorException = e;
+                    acceptNewRequest = false;
+                } catch (Exception e) {
+                    errorException = new IOException("callback failed: " + e.getMessage(), e);
+                    acceptNewRequest = false;
                 }
-                
             }
 
             try {
